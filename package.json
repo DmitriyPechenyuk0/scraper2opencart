@@ -5,7 +5,9 @@
   "main": "index.js",
   "scripts": {
     "image": "tsx parser.ts",
-    "catalog": "tsx catalog_parser.ts"
+    "catalog": "tsx catalog_parser.ts",
+    "scrape": "tsx src/orchestrator.ts",
+    "download": "tsx src/core/downloader.ts"
   },
   "keywords": [],
   "author": "",

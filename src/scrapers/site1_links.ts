@@ -1,14 +1,15 @@
 import fs from 'node:fs';
 import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { chromium } from 'playwright';
 
-const catalogUrl = 'https://ajax.systems/ru-ua/catalogue/baseline-intrusion-protection/';
-const outputJsonPath = './product_urls.json';
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
 
-async function parseCatalog(): Promise<void> {
-    console.log(`🔎 Запуск тотального парсера каталога: ${catalogUrl}`);
+export async function scrape(url: string, providerKey: string): Promise<void> {
+    console.log(`🔎 [${providerKey}] Starting links scraper for: ${url}`);
 
-    const browser = await chromium.launch({ headless: false });
+    const browser = await chromium.launch({ headless: true });
     const context = await browser.newContext({
         viewport: { width: 1920, height: 1080 },
         userAgent: 'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
@@ -19,39 +20,47 @@ async function parseCatalog(): Promise<void> {
     const page = await context.newPage();
 
     try {
-        await page.goto(catalogUrl, { waitUntil: 'networkidle' });
+        await page.goto(url, { waitUntil: 'networkidle' });
         
-        console.log('📜 Загружаем все страницы каталога с помощью кнопки "Показати більше"...');
+        console.log('📜 Loading all pages using "Показати більше" button...');
 
         let clickCount = 0;
         while (true) {
-            // Скроллим вниз, чтобы кнопка гарантированно была видна и доступна для клика
+            // Scroll to the bottom to make the button visible and clickable
             await page.evaluate(() => window.scrollTo(0, document.body.scrollHeight));
             await page.waitForTimeout(1000);
 
-            // Удаляем cookie consent banner и overlay, если они мешают клику
+            // Remove cookie consent banners and overlays
             await page.evaluate(() => {
                 document.querySelectorAll('.cky-consent-container, .cky-overlay').forEach(el => el.remove());
             });
 
-            const moreButton = page.locator('button[data-testid="pagination-more-button"]');
+            // Find "Show More" button
+            let moreButton = page.locator('button[data-testid="pagination-more-button"]');
+            
+            // Fallback to text selector if testid is not present
+            if (!(await moreButton.isVisible())) {
+                moreButton = page.locator('button:has-text("Показати більше")').filter({ visible: true });
+            }
+
             if (await moreButton.isVisible()) {
                 if (await moreButton.isDisabled()) {
-                    console.log('Кнопка "Показати більше" отключена (disabled). Все страницы загружены!');
+                    console.log('Button "Показати більше" is disabled. All pages loaded!');
                     break;
                 }
 
-                const currentPage = await moreButton.getAttribute('data-page');
-                console.log(`Найдена кнопка "Показати більше" (текущая страница: ${currentPage}). Кликаем...`);
+                const currentPage = await moreButton.getAttribute('data-page') || 'unknown';
+                console.log(`Found "Показати більше" button (current page: ${currentPage}). Clicking...`);
                 
                 await moreButton.click();
                 clickCount++;
 
-                // Ждем, пока кнопка либо исчезнет, либо станет disabled, либо её data-page обновится
+                // Wait for the button state/page number to update
                 try {
                     await page.waitForFunction(
                         ({ oldPage }) => {
-                            const btn = document.querySelector('button[data-testid="pagination-more-button"]');
+                            const btn = document.querySelector('button[data-testid="pagination-more-button"]') 
+                                        || Array.from(document.querySelectorAll('button')).find(b => b.textContent?.includes('Показати більше'));
                             if (!btn) return true;
                             if (btn.hasAttribute('disabled')) return true;
                             const newPage = btn.getAttribute('data-page');
@@ -61,17 +70,17 @@ async function parseCatalog(): Promise<void> {
                         { timeout: 8000 }
                     );
                 } catch (e) {
-                    console.log('Таймаут ожидания обновления кнопки. Возможно, это последняя страница.');
+                    console.log('Timeout waiting for button update. Checking if it was the last page.');
                 }
                 
                 await page.waitForTimeout(1000);
             } else {
-                console.log('Кнопка "Показати більше" не найдена или больше не видна. Все страницы загружены!');
+                console.log('Button "Показати більше" is not visible or not found. All pages loaded!');
                 break;
             }
         }
 
-        console.log('⚡ Извлекаем ссылки на товары из прогруженного DOM...');
+        console.log('⚡ Extracting product URLs from loaded DOM...');
 
         const urls: string[] = await page.evaluate(() => {
             const links: string[] = [];
@@ -83,15 +92,15 @@ async function parseCatalog(): Promise<void> {
                         const urlObj = new URL(href, window.location.origin);
                         const parts = urlObj.pathname.split('/').filter(Boolean);
                         
-                        // Проверяем, что это ссылка на конкретный товар (например, /ua/products/starterkit/)
-                        // а не на сам каталог (/ua/products/) или подраздел
+                        // Check if this is a product page link
+                        // E.g., /ua/products/starterkit/ (parts: ['ua', 'products', 'starterkit'])
                         const isProduct = parts.length >= 2 && parts[parts.length - 2] === 'products';
                         
                         if (isProduct) {
                             links.push(urlObj.pathname);
                         }
                     } catch (e) {
-                        // Игнорируем некорректные ссылки
+                        // Ignore invalid URLs
                     }
                 }
             });
@@ -99,7 +108,7 @@ async function parseCatalog(): Promise<void> {
             return Array.from(new Set(links)).map(pathname => window.location.origin + pathname);
         });
 
-        // Фильтруем случайный мусор (инструкции, саппорт, блоги)
+        // Filter out non-product pages
         const cleanUrls = urls.filter(url => {
             const lower = url.toLowerCase();
             return !lower.includes('/support') && 
@@ -108,19 +117,23 @@ async function parseCatalog(): Promise<void> {
                    !lower.includes('/cases');
         });
 
-        console.log(`\n📊 Успешно собрано товаров: ${cleanUrls.length}`);
+        console.log(`\n📊 Successfully collected ${cleanUrls.length} products for ${providerKey}`);
 
-        // Сохраняем в JSON
+        // Ensure output folder exists
+        const outputDir = path.resolve(__dirname, '../../links_pool');
+        if (!fs.existsSync(outputDir)) {
+            fs.mkdirSync(outputDir, { recursive: true });
+        }
+        
+        const outputJsonPath = path.join(outputDir, `${providerKey}_urls.json`);
         fs.writeFileSync(outputJsonPath, JSON.stringify(cleanUrls, null, 2), 'utf-8');
-        console.log(`✅ Список из ${cleanUrls.length} ссылок записан в: ${outputJsonPath}`);
+        console.log(`✅ Saved ${cleanUrls.length} links to: ${outputJsonPath}`);
 
     } catch (error: any) {
-        console.error('💥 Ошибка при парсинге:', error.message);
+        console.error(`💥 Error while scraping ${providerKey}:`, error.message);
+        throw error;
     } finally {
         await page.close();
         await browser.close();
-        console.log('\n🚀 Скрипт полностью завершил работу!');
     }
 }
-
-parseCatalog();

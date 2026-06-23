@@ -1,0 +1,7 @@
+{
+  "ajax-systems": {
+    "involved": true,
+    "url": "https://ajax.systems/ua/products/",
+    "scraper": "site1_links.ts"
+  }
+}
