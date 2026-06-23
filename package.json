@@ -7,7 +7,8 @@
     "image": "tsx parser.ts",
     "catalog": "tsx catalog_parser.ts",
     "scrape": "tsx src/orchestrator.ts",
-    "download": "tsx src/core/downloader.ts"
+    "download": "tsx src/core/downloader.ts",
+    "process": "tsx src/core/llm_processor.ts"
   },
   "keywords": [],
   "author": "",
@@ -24,7 +25,8 @@
     "axios": "^1.18.0",
     "cheerio": "^1.2.0",
     "playwright": "^1.61.0",
-    "sharp": "^0.35.2"
+    "sharp": "^0.35.2",
+    "zod": "^3.23.8"
   },
   "devDependencies": {
     "@types/cheerio": "^1.0.0",
