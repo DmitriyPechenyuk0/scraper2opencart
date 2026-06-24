@@ -2,7 +2,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { chromium } from 'playwright';
 
-const catalogUrl = 'https://ajax.systems/ru-ua/catalogue/baseline-intrusion-protection/';
+const catalogUrl = 'https://ajax.systems/ua/catalogue/baseline-intrusion-protection/';
 const outputJsonPath = './product_urls.json';
 
 async function parseCatalog(): Promise<void> {
