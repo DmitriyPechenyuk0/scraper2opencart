@@ -95,6 +95,15 @@ function cleanHtml(rawHtml: string): string {
   // 4. Strip SVG graphics
   html = html.replace(/<svg\b[^>]*>[\s\S]*?<\/svg>/gi, '');
 
+  // 4b. Remove iframes (reCAPTCHA, analytics, embeds)
+  html = html.replace(/<iframe\b[^>]*>[\s\S]*?<\/iframe>/gi, '');
+
+  // 4c. Remove forms (login, search, questions, etc.)
+  html = html.replace(/<form\b[^>]*>[\s\S]*?<\/form>/gi, '');
+
+  // 4d. Remove banner/slider images by URL patterns
+  html = html.replace(/<img\b[^>]*src=["'][^"']*\/(?:slider|wysiwyg|banner)[^"']*["'][^>]*>/gi, '');
+
   // 5. Remove head metadata elements
   html = html.replace(/<link\b[^>]*\/?>/gi, '');
   html = html.replace(/<meta\b[^>]*\/?>/gi, '');

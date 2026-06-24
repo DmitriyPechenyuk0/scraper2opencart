@@ -6,8 +6,12 @@ import { chromium } from 'playwright';
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
-export async function scrape(url: string, providerKey: string): Promise<void> {
-    console.log(`🔎 [${providerKey}] Starting links scraper for: ${url}`);
+export async function scrape(
+    url: string,
+    providerKey: string,
+    options: { maxPages?: number; maxProducts?: number } = {}
+): Promise<void> {
+    console.log(`🔎 [${providerKey}] Starting links scraper for: ${url} (options: ${JSON.stringify(options)})`);
 
     const browser = await chromium.launch({ headless: true });
     const context = await browser.newContext({
@@ -41,6 +45,11 @@ export async function scrape(url: string, providerKey: string): Promise<void> {
             // Fallback to text selector if testid is not present
             if (!(await moreButton.isVisible())) {
                 moreButton = page.locator('button:has-text("Показати більше")').filter({ visible: true });
+            }
+
+            if (options.maxPages && clickCount >= options.maxPages - 1) {
+                console.log(`Reached maxPages limit of ${options.maxPages}. Stopping page loads.`);
+                break;
             }
 
             if (await moreButton.isVisible()) {
@@ -109,13 +118,18 @@ export async function scrape(url: string, providerKey: string): Promise<void> {
         });
 
         // Filter out non-product pages
-        const cleanUrls = urls.filter(url => {
+        let cleanUrls = urls.filter(url => {
             const lower = url.toLowerCase();
             return !lower.includes('/support') && 
                    !lower.includes('/blog') && 
                    !lower.includes('/where-to-buy') && 
                    !lower.includes('/cases');
         });
+
+        if (options.maxProducts && cleanUrls.length > options.maxProducts) {
+            console.log(`✂️  Limiting product URLs list to ${options.maxProducts} (originally collected ${cleanUrls.length})`);
+            cleanUrls = cleanUrls.slice(0, options.maxProducts);
+        }
 
         console.log(`\n📊 Successfully collected ${cleanUrls.length} products for ${providerKey}`);
 

@@ -33,7 +33,10 @@ async function run() {
                 throw new Error(`Scraper module "${provider.scraper}" does not export a "scrape" function.`);
             }
 
-            await scraperModule.scrape(provider.url, key);
+            await scraperModule.scrape(provider.url, key, {
+                maxPages: provider.maxPages,
+                maxProducts: provider.maxProducts
+            });
             console.log(`✅ Completed scraper for provider "${key}"`);
         } catch (error: any) {
             console.error(`💥 Error running scraper for provider "${key}":`, error.stack || error.message);

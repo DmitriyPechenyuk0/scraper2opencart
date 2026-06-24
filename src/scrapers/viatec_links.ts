@@ -6,8 +6,12 @@ import { chromium } from 'playwright';
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
-export async function scrape(url: string, providerKey: string): Promise<void> {
-    console.log(`🔎 [${providerKey}] Starting links scraper for: ${url}`);
+export async function scrape(
+    url: string,
+    providerKey: string,
+    options: { maxPages?: number; maxProducts?: number } = {}
+): Promise<void> {
+    console.log(`🔎 [${providerKey}] Starting links scraper for: ${url} (options: ${JSON.stringify(options)})`);
 
     const browser = await chromium.launch({ headless: true });
     const context = await browser.newContext({
@@ -28,6 +32,11 @@ export async function scrape(url: string, providerKey: string): Promise<void> {
         let prevItemsCount = 0;
         
         while (true) {
+            if (options.maxPages && clickCount >= options.maxPages - 1) {
+                console.log(`Reached maxPages limit of ${options.maxPages}. Stopping page loads.`);
+                break;
+            }
+
             // Scroll to the bottom to make the "Show More" link visible and load images
             await page.evaluate(() => window.scrollTo(0, document.body.scrollHeight));
             await page.waitForTimeout(1000);
@@ -86,7 +95,13 @@ export async function scrape(url: string, providerKey: string): Promise<void> {
             return Array.from(new Set(links));
         });
 
-        console.log(`\n📊 Successfully collected ${urls.length} products for ${providerKey}`);
+        let finalUrls = urls;
+        if (options.maxProducts && finalUrls.length > options.maxProducts) {
+            console.log(`✂️  Limiting product URLs list to ${options.maxProducts} (originally collected ${finalUrls.length})`);
+            finalUrls = finalUrls.slice(0, options.maxProducts);
+        }
+
+        console.log(`\n📊 [${providerKey}] Successfully collected ${finalUrls.length} product URLs.`);
 
         // Ensure output folder exists
         const outputDir = path.resolve(__dirname, '../../links_pool');
@@ -95,8 +110,8 @@ export async function scrape(url: string, providerKey: string): Promise<void> {
         }
         
         const outputJsonPath = path.join(outputDir, `${providerKey}_urls.json`);
-        fs.writeFileSync(outputJsonPath, JSON.stringify(urls, null, 2), 'utf-8');
-        console.log(`✅ Saved ${urls.length} links to: ${outputJsonPath}`);
+        fs.writeFileSync(outputJsonPath, JSON.stringify(finalUrls, null, 2), 'utf-8');
+        console.log(`✅ [${providerKey}] Saved ${finalUrls.length} links to: ${outputJsonPath}`);
 
     } catch (error: any) {
         console.error(`💥 Error while scraping ${providerKey}:`, error.message);

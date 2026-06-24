@@ -16,8 +16,12 @@ const __dirname = path.dirname(__filename);
  *                          The scraper reads the last page number from the toolbar,
  *                          then iterates pages 1..N sequentially.
  */
-export async function scrape(url: string, providerKey: string): Promise<void> {
-    console.log(`🔎 [${providerKey}] Starting links scraper for: ${url}`);
+export async function scrape(
+    url: string,
+    providerKey: string,
+    options: { maxPages?: number; maxProducts?: number } = {}
+): Promise<void> {
+    console.log(`🔎 [${providerKey}] Starting links scraper for: ${url} (options: ${JSON.stringify(options)})`);
 
     const browser = await chromium.launch({ headless: true });
     const context = await browser.newContext({
@@ -123,7 +127,8 @@ export async function scrape(url: string, providerKey: string): Promise<void> {
         await loadPage(url);
 
         const totalPages = await detectTotalPages();
-        console.log(`📋 [${providerKey}] Detected ${totalPages} page(s) in the catalog.`);
+        const limitPages = options.maxPages && options.maxPages < totalPages ? options.maxPages : totalPages;
+        console.log(`📋 [${providerKey}] Detected ${totalPages} page(s) in the catalog. Scraping up to ${limitPages} page(s).`);
 
         await collectUrls();
         console.log(
@@ -131,9 +136,9 @@ export async function scrape(url: string, providerKey: string): Promise<void> {
         );
 
         // ── Pages 2..N ──────────────────────────────────────────────────────
-        for (let pageNum = 2; pageNum <= totalPages; pageNum++) {
+        for (let pageNum = 2; pageNum <= limitPages; pageNum++) {
             const pageUrl = buildPageUrl(url, pageNum);
-            console.log(`📄 [${providerKey}] Loading page ${pageNum} / ${totalPages}: ${pageUrl}`);
+            console.log(`📄 [${providerKey}] Loading page ${pageNum} / ${limitPages}: ${pageUrl}`);
 
             try {
                 await loadPage(pageUrl);
@@ -154,7 +159,11 @@ export async function scrape(url: string, providerKey: string): Promise<void> {
         }
 
         // ── Persist results ─────────────────────────────────────────────────
-        const urls = Array.from(allUrls);
+        let urls = Array.from(allUrls);
+        if (options.maxProducts && urls.length > options.maxProducts) {
+            console.log(`✂️  Limiting product URLs list to ${options.maxProducts} (originally collected ${urls.length})`);
+            urls = urls.slice(0, options.maxProducts);
+        }
         console.log(`\n📊 [${providerKey}] Successfully collected ${urls.length} product URLs.`);
 
         const outputDir = path.resolve(__dirname, '../../links_pool');

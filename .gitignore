@@ -4,3 +4,6 @@ product_urls.json
 .gemini/
 .antigravityignore
 storage/
+export/
+links_pool/
+scratch/

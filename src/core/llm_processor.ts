@@ -9,134 +9,93 @@ const __dirname = path.dirname(__filename);
 const PROJECT_ROOT = path.resolve(__dirname, '../..');
 const STORAGE_DIR = path.join(PROJECT_ROOT, 'storage');
 const PROVIDERS_CONFIG_PATH = path.join(PROJECT_ROOT, 'providers.json');
-const OLLAMA_URL = 'http://localhost:11434/api/chat';
-const OLLAMA_MODEL = 'qwen2.5:7b';
+
+// ─── llama.cpp server (OpenAI-compatible API) ────────────────────────────────
+const LLAMA_URL = 'http://127.0.0.1:8080/v1/chat/completions';
+// Модель: llama.cpp не требует имени — передаём произвольную строку.
+// Если нужна конкретная — поменяй ниже.
+const LLAMA_MODEL = 'local-model';
 const MAX_RETRIES = 3;
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Zod Schema — строгая структура product.json
-// Спроектирована по полям OpenCart (oc_product, oc_product_description,
-// oc_product_attribute) для дальнейшего XML-экспорта через Universal I/E.
+// Zod Schema — строгая структура data.json
+//
+// Обязательные поля: name, description, meta_title, meta_h1,
+//                    meta_description, meta_keyword
+// Остальные — optional / default(''). Если LLM не нашла данные — оставляет
+// пустую строку или пустой массив, и скрипт сохраняет то, что есть.
 // ─────────────────────────────────────────────────────────────────────────────
-
-/**
- * Один атрибут товара.
- * group → oc_attribute_group.name
- * name  → oc_attribute.name
- * value → oc_product_attribute.text
- */
 const AttributeSchema = z.object({
-  group: z.string().min(1, 'Attribute group cannot be empty'),
-  name: z.string().min(1, 'Attribute name cannot be empty'),
-  value: z.string().min(1, 'Attribute value cannot be empty'),
+  group: z.string().min(1),
+  name:  z.string().min(1),
+  value: z.string().min(1),
 });
 
-/**
- * Полная схема товара.
- *
- * Обязательные поля (guaranteed to exist on any product):
- *   name, meta_title, meta_h1, meta_description, meta_keyword, description
- *
- * Необязательные поля (may not exist for every product):
- *   model, sku, tags, weight, dimensions, attributes
- *
- * Поле category — заполняется из фиксированного словаря (см. CATEGORY_MAP ниже).
- * Цена намеренно исключена — заполняется вручную в OpenCart.
- */
 export const ProductSchema = z.object({
-  // ── Контент (oc_product_description) ──────────────────────────────────────
-  name: z
-    .string()
-    .min(2, 'Product name must be at least 2 characters')
-    .max(255, 'Product name must be under 255 characters'),
+  // ── Контент ───────────────────────────────────────────────────────────────
+  name: z.string().min(2).max(255),
 
   description: z
     .string()
-    .min(10, 'Description is too short')
-    .describe('HTML description of the product. Must contain semantic product info.'),
+    .min(10)
+    .describe('HTML description. Must contain semantic product info.'),
 
-  // ── SEO мета-данные (генерирует LLM) ──────────────────────────────────────
-  meta_title: z
-    .string()
-    .min(10, 'meta_title too short')
-    .max(160, 'meta_title must be under 160 characters'),
+  // ── SEO ───────────────────────────────────────────────────────────────────
+  meta_title: z.string().min(10).max(160),
 
-  meta_h1: z
-    .string()
-    .min(5, 'meta_h1 too short')
-    .max(120, 'meta_h1 must be under 120 characters')
-    .describe('H1 heading for the product page, may differ from name'),
-
-  meta_description: z
-    .string()
-    .min(50, 'meta_description too short')
-    .max(300, 'meta_description must be under 300 characters'),
+  meta_description: z.string().min(50).max(300),
 
   meta_keyword: z
     .string()
-    .min(3, 'meta_keyword too short')
-    .max(255, 'meta_keyword must be under 255 characters')
+    .min(3)
+    .max(255)
     .describe('Comma-separated keywords'),
 
-  // ── Теги (oc_product_description.tag) ─────────────────────────────────────
-  tags: z
-    .string()
-    .max(255, 'tags must be under 255 characters')
-    .optional()
-    .default('')
-    .describe('Comma-separated product tags for internal search'),
+  // ── Теги ──────────────────────────────────────────────────────────────────
+  tags: z.string().max(255).optional().default(''),
 
-  // ── Категория (определяется LLM по фиксированному словарю) ────────────────
-  category: z
-    .string()
-    .min(1, 'category cannot be empty')
-    .describe('Category path, e.g. "Охоронні системи > Хаби"'),
+  // ── Категорія ─────────────────────────────────────────────────────────────
+  category: z.string().min(1),
 
-  // ── Идентификаторы товара (oc_product) ────────────────────────────────────
-  model: z
-    .string()
-    .max(64, 'model must be under 64 characters')
-    .optional()
-    .default('')
-    .describe('Product model number from the manufacturer'),
+  // ── Ідентифікатори ────────────────────────────────────────────────────────
+  model: z.string().max(64).optional().default(''),
+  sku:   z.string().max(64).optional().default(''),
 
-  sku: z
-    .string()
-    .max(64, 'sku must be under 64 characters')
-    .optional()
-    .default('')
-    .describe('Stock Keeping Unit identifier'),
+  // ── Ціна (oc_product.price) ───────────────────────────────────────────────
+  price: z.number().min(0).optional().default(0),
 
-  // ── Физические параметры (oc_product) ─────────────────────────────────────
-  weight: z
-    .string()
-    .optional()
-    .default('')
-    .describe('Product weight with unit, e.g. "0.32 кг". Empty if unknown.'),
+  // ── Фізичні параметри ─────────────────────────────────────────────────────
+  weight:     z.string().optional().default(''),
+  dimensions: z.string().optional().default(''),
 
-  dimensions: z
-    .string()
-    .optional()
-    .default('')
-    .describe('Product dimensions LxWxH with unit, e.g. "163 x 163 x 36 мм". Empty if unknown.'),
+  // ── Технічні характеристики ───────────────────────────────────────────────
+  attributes: z.array(AttributeSchema).optional().default([]),
 
-  // ── Технические характеристики (oc_product_attribute) ─────────────────────
-  attributes: z
-    .array(AttributeSchema)
-    .optional()
-    .default([])
-    .describe('Technical specifications of the product. Extract ALL available specs from the page.'),
+  // ── Наявність ──────────────────────────────────────────────────────────────
+  in_stock: z.boolean().optional().default(true),
 });
 
-// Тип, выводимый из схемы — используется везде в коде
 export type ProductData = z.infer<typeof ProductSchema>;
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Фиксированный словарь категорий
-// LLM должна выбрать одну из этих категорий на основе HTML.
-// Путь пишется через " > " (пробел-знак-пробел).
+// Схема для «часткового» збереження: те саме, але обов'язкові поля
+// послаблені — якщо на сторінці мало даних, зберігаємо всё що є.
 // ─────────────────────────────────────────────────────────────────────────────
-// TODO: Дополните список категорий под ваш магазин
+const PartialProductSchema = ProductSchema.partial({
+  description:      true,
+  meta_title:       true,
+  meta_description: true,
+  meta_keyword:     true,
+  category:         true,
+}).extend({
+  _partial: z.literal(true).optional(),  // маркер часткового запису
+});
+
+export type PartialProductData = z.infer<typeof PartialProductSchema>;
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Фіксований словник категорій
+// ─────────────────────────────────────────────────────────────────────────────
 const ALLOWED_CATEGORIES = [
   'Охоронні системи > Стартові комплекти',
   'Охоронні системи > Хаби',
@@ -159,86 +118,115 @@ const ALLOWED_CATEGORIES = [
 ] as const;
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Системный промпт для LLM
+// Системний промпт
 // ─────────────────────────────────────────────────────────────────────────────
 function buildSystemPrompt(): string {
-  return `Ти — досвідчений контент-менеджер інтернет-магазину систем безпеки та автоматизації.
-Твоя задача — проаналізувати очищений HTML сторінки товару і повернути ЛИШЕ JSON-об'єкт без жодного іншого тексту.
+  return `Ти — досвідчений контент-менеджер інтернет-магазину систем безпеки та відеоспостереження.
+Твоя задача — проаналізувати очищений HTML сторінки товару і повернути ТІЛЬКИ JSON-об'єкт без будь-якого іншого тексту.
 
 ОБОВ'ЯЗКОВІ ПРАВИЛА:
-1. Повертай ТІЛЬКИ JSON, без markdown, без коментарів, без пояснень.
+1. Повертай ТІЛЬКИ валідний JSON. Без markdown-обгортки, без коментарів, без пояснень.
 2. Використовуй мову оригінального сайту (якщо сайт українською — пиши українською).
-3. description — це HTML з тегами <p>, <ul>, <li>, <strong>. Зроби його інформативним, на основі реальних даних зі сторінки.
-4. meta_title — до 160 символів, включає назву і ключове слово.
-5. meta_h1 — може відрізнятися від name, має бути природним і містити ключові слова.
-6. meta_description — 150–300 символів, заклик до дії + переваги.
-7. meta_keyword — 5–10 ключових слів через кому.
-8. tags — 3–8 тегів через кому (загальні терміни для пошуку).
-9. category — ОБОВ'ЯЗКОВО вибери ОДНУ категорію з наступного списку (точний текст):
+3. Якщо якоїсь інформації немає на сторінці — залишай поле порожнім рядком "", числове поле — 0, масив — [].
+4. НЕ вигадуй дані яких немає на сторінці.
+5. description — HTML з тегами <p>, <ul>, <li>, <strong>. Інформативний, на основі реальних даних.
+6. meta_title — до 160 символів, включає назву і ключове слово.
+7. meta_description — 150–300 символів, заклик до дії + переваги.
+8. meta_keyword — 5–10 ключових слів через кому.
+9. tags — 3–8 тегів через кому.
+10. category — ОБОВ'ЯЗКОВО вибери ОДНУ категорію з наступного списку (точний текст):
 ${ALLOWED_CATEGORIES.map(c => `   - "${c}"`).join('\n')}
-10. model і sku — беги з реальних даних на сторінці (з характеристик або заголовка). Якщо не знайшов — залиш порожнім рядком "".
-11. weight і dimensions — рядок з одиницями виміру ("0.32 кг", "163 x 163 x 36 мм"). Якщо не знайшов — "".
-12. attributes — ОБОВ'ЯЗКОВО витягни ВСІ технічні характеристики з розділу специфікацій. Кожна характеристика: { "group": "Назва групи", "name": "Назва параметра", "value": "Значення" }.
+11. model і sku — з реальних даних на сторінці. Якщо не знайшов — "".
+12. price — числова ціна товару в гривнях (тільки число, без валюти). Якщо ціни немає — 0.
+13. weight — рядок з одиницями ("0.32 кг"). Якщо не знайшов — "".
+14. dimensions — рядок LxWxH з одиницями ("163 x 163 x 36 мм"). Якщо не знайшов — "".
+15. attributes — витягни ВСІ технічні характеристики. Якщо їх немає — [].
+16. in_stock — логічне значення (true/false). Поверни true якщо товар є в наявності (наприклад, "В наявності", "Є на складі", "Купити", "Додати до кошика"), поверни false якщо товару немає (наприклад, "Немає в наявності", "Закінчився", "Немає на складі", "Повідомити про наявність").
 
 СТРУКТУРА JSON:
 {
   "name": "string (2–255 символів)",
   "description": "string (HTML)",
   "meta_title": "string (10–160 символів)",
-  "meta_h1": "string (5–120 символів)",
   "meta_description": "string (50–300 символів)",
   "meta_keyword": "string",
   "tags": "string",
-  "category": "string (з дозволеного списку)",
+  "category": "string (з дозволеного списку вище)",
   "model": "string",
   "sku": "string",
+  "price": 0,
   "weight": "string",
   "dimensions": "string",
-  "attributes": [{ "group": "string", "name": "string", "value": "string" }]
+  "attributes": [{ "group": "string", "name": "string", "value": "string" }],
+  "in_stock": true
 }`;
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Ollama API — відправка запиту
+// llama.cpp API (OpenAI-compatible /v1/chat/completions)
 // ─────────────────────────────────────────────────────────────────────────────
-interface OllamaMessage {
+interface ChatMessage {
   role: 'system' | 'user' | 'assistant';
   content: string;
 }
 
-async function callOllama(messages: OllamaMessage[]): Promise<string> {
-  const response = await fetch(OLLAMA_URL, {
+async function callLlama(messages: ChatMessage[]): Promise<string> {
+  const response = await fetch(LLAMA_URL, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({
-      model: OLLAMA_MODEL,
+      model: LLAMA_MODEL,
       messages,
-      format: 'json',   // Примушує Ollama повернути валідний JSON
+      response_format: { type: 'json_object' }, // гарантує JSON-відповідь
       stream: false,
-      options: {
-        temperature: 0.1,  // Низька температура = менше галюцинацій
-        num_predict: 4096, // Достатньо для повного JSON з атрибутами
-      },
+      temperature: 0.1,   // мінімум галюцинацій
+      max_tokens: 8192,   // достатньо для великих товарів з 25+ атрибутами
     }),
   });
 
   if (!response.ok) {
     const text = await response.text();
-    throw new Error(`Ollama API error ${response.status}: ${text}`);
+    throw new Error(`llama.cpp API error ${response.status}: ${text}`);
   }
 
-  const data = await response.json() as { message: { content: string } };
-  return data.message.content;
+  const data = await response.json() as {
+    choices: Array<{ message: { content: string } }>;
+  };
+
+  const content = data.choices?.[0]?.message?.content;
+  if (!content) {
+    throw new Error('llama.cpp returned empty response content');
+  }
+  return content;
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Витягнути JSON навіть якщо LLM обгорнула у markdown-блок
+// ─────────────────────────────────────────────────────────────────────────────
+function extractJson(raw: string): string {
+  // Прибираємо ```json ... ``` або ``` ... ```
+  const mdMatch = raw.match(/```(?:json)?\s*([\s\S]*?)\s*```/);
+  if (mdMatch) return mdMatch[1];
+
+  // Якщо є просто { ... } — беремо першу та останню фігурну дужку
+  const start = raw.indexOf('{');
+  const end   = raw.lastIndexOf('}');
+  if (start !== -1 && end !== -1 && end > start) {
+    return raw.slice(start, end + 1);
+  }
+
+  return raw.trim();
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Цикл валідації з повторними запитами
+// Якщо після MAX_RETRIES повна схема не проходить — зберігаємо частковий запис
 // ─────────────────────────────────────────────────────────────────────────────
 async function processWithRetry(
   html: string,
   slug: string
-): Promise<ProductData> {
-  const messages: OllamaMessage[] = [
+): Promise<ProductData | PartialProductData> {
+  const messages: ChatMessage[] = [
     { role: 'system', content: buildSystemPrompt() },
     {
       role: 'user',
@@ -246,117 +234,121 @@ async function processWithRetry(
     },
   ];
 
-  for (let attempt = 1; attempt <= MAX_RETRIES; attempt++) {
-    console.log(`    🤖 Ollama request attempt ${attempt}/${MAX_RETRIES}...`);
+  let lastParsed: unknown = null;
+  let lastRaw    = '';
 
-    /* ── ЗАКОМЕНТОВАНО: розкоментуй коли Ollama налаштована ─────────────────
+  for (let attempt = 1; attempt <= MAX_RETRIES; attempt++) {
+    console.log(`    🤖 llama.cpp запит ${attempt}/${MAX_RETRIES}...`);
+
     let rawResponse: string;
     try {
-      rawResponse = await callOllama(messages);
-    } catch (err: any) {
-      console.error(`    ❌ Ollama request failed: ${err.message}`);
+      rawResponse = await callLlama(messages);
+      lastRaw = rawResponse;
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : String(err);
+      console.error(`    ❌ Помилка запиту: ${msg}`);
       if (attempt === MAX_RETRIES) throw err;
       await new Promise(r => setTimeout(r, 2000 * attempt));
       continue;
     }
 
-    // Парсинг JSON
+    // ── Парсинг JSON ──────────────────────────────────────────────────────
     let parsed: unknown;
     try {
-      parsed = JSON.parse(rawResponse);
-    } catch (parseErr: any) {
-      const errMsg = `JSON parse failed: ${parseErr.message}. Raw: ${rawResponse.slice(0, 200)}`;
-      console.warn(`    ⚠️  ${errMsg}`);
+      parsed = JSON.parse(extractJson(rawResponse));
+      lastParsed = parsed;
+    } catch (parseErr: unknown) {
+      const msg = parseErr instanceof Error ? parseErr.message : String(parseErr);
+      console.warn(`    ⚠️  JSON parse error: ${msg}`);
+      console.warn(`    Raw preview: ${rawResponse.slice(0, 300)}`);
+
       if (attempt < MAX_RETRIES) {
         messages.push(
           { role: 'assistant', content: rawResponse },
           {
             role: 'user',
-            content: `Ти повернув невалідний JSON. Помилка: ${parseErr.message}. Поверни виправлений JSON без будь-якого тексту навколо нього.`,
+            content: `Ти повернув невалідний JSON. Помилка парсингу: ${msg}.\nПоверни ТІЛЬКИ виправлений JSON-об'єкт без будь-якого тексту навколо.`,
           }
         );
         continue;
       }
-      throw new Error(errMsg);
+      // Перед кидком помилки — спробуємо частковий запис
+      break;
     }
 
-    // Валідація Zod
-    const result = ProductSchema.safeParse(parsed);
-    if (result.success) {
-      console.log(`    ✅ Validation passed on attempt ${attempt}`);
-      return result.data;
+    // ── Zod валідація — повна схема ───────────────────────────────────────
+    const fullResult = ProductSchema.safeParse(parsed);
+    if (fullResult.success) {
+      console.log(`    ✅ Валідація пройшла (спроба ${attempt})`);
+      return fullResult.data;
     }
 
-    const zodError = result.error.errors
+    const zodErrors = fullResult.error.errors
       .map(e => `  - ${e.path.join('.')}: ${e.message}`)
       .join('\n');
 
-    console.warn(`    ⚠️  Zod validation failed (attempt ${attempt}):\n${zodError}`);
+    console.warn(`    ⚠️  Zod помилки (спроба ${attempt}):\n${zodErrors}`);
 
     if (attempt < MAX_RETRIES) {
       messages.push(
         { role: 'assistant', content: rawResponse },
         {
           role: 'user',
-          content: `Ти повернув неправильну структуру даних. Помилки:\n${zodError}\n\nВиправ JSON і поверни ТІЛЬКИ виправлений об'єкт.`,
+          content: `Ти повернув неправильну структуру даних. Помилки:\n${zodErrors}\n\nВиправ JSON і поверни ТІЛЬКИ виправлений об'єкт.`,
         }
       );
-    } else {
-      throw new Error(`Max retries reached. Last Zod errors:\n${zodError}`);
     }
-    ── КІНЕЦЬ ЗАКОМЕНТОВАНОГО БЛОКУ ─────────────────────────────────────── */
-
-    // ── ЗАГЛУШКА для тестування без Ollama ───────────────────────────────────
-    // Генерує мінімально валідний product.json щоб перевірити пайплайн
-    // Видали цей блок після налаштування Ollama ↓
-    console.warn(`    ⚠️  [STUB] Ollama not connected — generating placeholder data for: ${slug}`);
-    const stubData: ProductData = ProductSchema.parse({
-      name: slug.replace(/-/g, ' ').replace(/\b\w/g, c => c.toUpperCase()),
-      description: `<p>Опис товару <strong>${slug}</strong>. Після підключення Ollama тут буде повноцінний опис з характеристиками.</p>`,
-      meta_title: `${slug} — купити в інтернет-магазині`,
-      meta_h1: `${slug.replace(/-/g, ' ').replace(/\b\w/g, c => c.toUpperCase())} — характеристики та ціна`,
-      meta_description: `Купити ${slug.replace(/-/g, ' ')} в інтернет-магазині. Технічні характеристики, фото та ціна. Доставка по всій Україні.`,
-      meta_keyword: `${slug.replace(/-/g, ', ')}, ajax systems, охоронна система`,
-      tags: slug.replace(/-/g, ', '),
-      category: 'Охоронні системи > Стартові комплекти',
-      model: '',
-      sku: '',
-      weight: '',
-      dimensions: '',
-      attributes: [],
-    });
-    return stubData;
-    // ── КІНЕЦЬ ЗАГЛУШКИ ───────────────────────────────────────────────────────
   }
 
-  // TypeScript: теоретично недосяжно, але потрібно для типізації
-  throw new Error('Unexpected exit from retry loop');
+  // ── Часткове збереження: якщо хоч щось спарсилось ────────────────────────
+  if (lastParsed !== null) {
+    const partialResult = PartialProductSchema.safeParse({
+      ...(lastParsed as object),
+      _partial: true,
+    });
+    if (partialResult.success) {
+      console.warn(
+        `    ⚠️  [PARTIAL] Збережено частковий data.json для "${slug}". ` +
+        `Деякі поля відсутні — перевірте вручну.`
+      );
+      return partialResult.data;
+    }
+  }
+
+  throw new Error(
+    `Не вдалося отримати валідний JSON від llama.cpp для "${slug}" після ${MAX_RETRIES} спроб. ` +
+    `Raw preview: ${lastRaw.slice(0, 500)}`
+  );
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Обробка одного товару
 // ─────────────────────────────────────────────────────────────────────────────
-async function processProduct(
-  providerKey: string,
-  slug: string
-): Promise<void> {
-  const productDir = path.join(STORAGE_DIR, providerKey, slug);
+async function processProduct(providerKey: string, slug: string): Promise<void> {
+  const productDir  = path.join(STORAGE_DIR, providerKey, slug);
   const rawHtmlPath = path.join(productDir, 'raw_page.html');
-  const productJsonPath = path.join(productDir, 'product.json');
+  const dataJsonPath = path.join(productDir, 'data.json');
 
-  // Пропускаємо якщо product.json вже існує
-  if (fs.existsSync(productJsonPath)) {
-    console.log(`  ⏭️  Skip (already processed): ${slug}`);
-    return;
+  // Пропускаємо якщо data.json вже існує і НЕ є частковим записом
+  if (fs.existsSync(dataJsonPath)) {
+    try {
+      const existing = JSON.parse(fs.readFileSync(dataJsonPath, 'utf-8')) as { _partial?: boolean };
+      if (!existing._partial) {
+        console.log(`  ⏭️  Skip (already processed): ${slug}`);
+        return;
+      }
+      console.log(`  🔄 Retry partial: ${slug}`);
+    } catch {
+      // Якщо файл пошкоджений — переробимо
+    }
   }
 
-  // Перевірка наявності raw_page.html
   if (!fs.existsSync(rawHtmlPath)) {
-    console.warn(`  ⚠️  raw_page.html not found for: ${slug}. Run downloader first.`);
+    console.warn(`  ⚠️  raw_page.html не знайдено для: ${slug}. Спочатку запустіть downloader.`);
     return;
   }
 
-  console.log(`  🔬 Processing: ${slug}`);
+  console.log(`  🔬 Обробка: ${slug}`);
 
   const html = fs.readFileSync(rawHtmlPath, 'utf-8');
 
@@ -368,64 +360,114 @@ async function processProduct(
 
   try {
     const productData = await processWithRetry(truncatedHtml, slug);
-    fs.writeFileSync(productJsonPath, JSON.stringify(productData, null, 2), 'utf-8');
-    console.log(`    💾 Saved product.json (${JSON.stringify(productData).length} bytes, ${productData.attributes?.length ?? 0} attributes)`);
-  } catch (err: any) {
-    console.error(`    💥 Failed to process ${slug}: ${err.message}`);
+    fs.writeFileSync(dataJsonPath, JSON.stringify(productData, null, 2), 'utf-8');
+
+    const isPartial = '_partial' in productData && productData._partial;
+    const attrCount = 'attributes' in productData ? (productData.attributes?.length ?? 0) : 0;
+    console.log(
+      `    💾 Saved data.json` +
+      (isPartial ? ' [PARTIAL]' : '') +
+      ` (${JSON.stringify(productData).length} bytes, ${attrCount} attributes)`
+    );
+  } catch (err: unknown) {
+    const msg = err instanceof Error ? err.message : String(err);
+    console.error(`    💥 Failed to process ${slug}: ${msg}`);
   }
 }
 
+// ─────────────────────────────────────────────────────────────────────────────
+// Головна функція
+// ─────────────────────────────────────────────────────────────────────────────
 async function run(): Promise<void> {
   if (!fs.existsSync(PROVIDERS_CONFIG_PATH)) {
-    console.error(`❌ providers.json not found at ${PROVIDERS_CONFIG_PATH}`);
+    console.error(`❌ providers.json не знайдено: ${PROVIDERS_CONFIG_PATH}`);
     process.exit(1);
   }
 
-  const providers = JSON.parse(fs.readFileSync(PROVIDERS_CONFIG_PATH, 'utf-8')) as Record<
-    string,
-    { involved: boolean }
-  >;
+  const providers = JSON.parse(
+    fs.readFileSync(PROVIDERS_CONFIG_PATH, 'utf-8')
+  ) as Record<string, { involved: boolean }>;
 
   const activeProviders = Object.entries(providers).filter(([, cfg]) => cfg.involved);
 
   if (activeProviders.length === 0) {
-    console.log('No active providers. Exiting.');
+    console.log('Немає активних провайдерів у providers.json. Виходжу.');
     return;
   }
 
+  // ── Перевірка доступності llama.cpp ──────────────────────────────────────
+  console.log('🔍 Перевірка з\'єднання з llama.cpp (http://127.0.0.1:8080)...');
+  try {
+    const health = await fetch('http://127.0.0.1:8080/health', { signal: AbortSignal.timeout(5000) });
+    if (health.ok) {
+      console.log('✅ llama.cpp доступний.\n');
+    } else {
+      console.warn(`⚠️  llama.cpp відповів статусом ${health.status}. Продовжуємо.\n`);
+    }
+  } catch {
+    console.error(
+      '❌ llama.cpp недоступний на 127.0.0.1:8080.\n' +
+      '   Переконайтесь що сервер запущено командою:\n' +
+      '   ./llama-server -m <model.gguf> --port 8080 --host 127.0.0.1\n'
+    );
+    process.exit(1);
+  }
+
   let totalProcessed = 0;
-  let totalSkipped = 0;
-  let totalFailed = 0;
+  let totalSkipped   = 0;
+  let totalFailed    = 0;
+  let totalPartial   = 0;
 
   for (const [providerKey] of activeProviders) {
     const providerDir = path.join(STORAGE_DIR, providerKey);
 
     if (!fs.existsSync(providerDir)) {
-      console.warn(`⚠️  Storage directory not found for provider "${providerKey}". Run downloader first.`);
+      console.warn(
+        `⚠️  Папка storage/${providerKey}/ не знайдена. ` +
+        `Спочатку запустіть downloader.`
+      );
       continue;
     }
 
-    const slugs = fs.readdirSync(providerDir).filter(name => {
-      return fs.statSync(path.join(providerDir, name)).isDirectory();
-    });
+    const slugs = fs
+      .readdirSync(providerDir)
+      .filter(name => fs.statSync(path.join(providerDir, name)).isDirectory());
 
-    console.log(`\n🚀 Provider: "${providerKey}" — ${slugs.length} products to process`);
+    console.log(`\n🚀 Провайдер: "${providerKey}" — ${slugs.length} товарів`);
 
     for (let i = 0; i < slugs.length; i++) {
       const slug = slugs[i];
       console.log(`\n[${i + 1}/${slugs.length}] ${slug}`);
 
-      const productJsonPath = path.join(STORAGE_DIR, providerKey, slug, 'product.json');
-      if (fs.existsSync(productJsonPath)) {
-        totalSkipped++;
-      }
+      const dataJsonPath = path.join(STORAGE_DIR, providerKey, slug, 'data.json');
+
+      // Перевіряємо до виклику — щоб правильно рахувати статистику
+      const existedBefore = fs.existsSync(dataJsonPath);
 
       try {
         await processProduct(providerKey, slug);
-        if (!fs.existsSync(productJsonPath)) {
-          // Was not skipped, check if it was created
+
+        if (fs.existsSync(dataJsonPath)) {
+          if (existedBefore) {
+            // Може бути повторна обробка partial
+            const saved = JSON.parse(fs.readFileSync(dataJsonPath, 'utf-8')) as { _partial?: boolean };
+            if (saved._partial) {
+              totalPartial++;
+            } else {
+              totalSkipped++;
+            }
+          } else {
+            const saved = JSON.parse(fs.readFileSync(dataJsonPath, 'utf-8')) as { _partial?: boolean };
+            if (saved._partial) {
+              totalPartial++;
+            } else {
+              totalProcessed++;
+            }
+          }
+        } else {
+          // Був skip (раніше оброблений без _partial)
+          totalSkipped++;
         }
-        totalProcessed++;
       } catch {
         totalFailed++;
       }
@@ -433,14 +475,15 @@ async function run(): Promise<void> {
   }
 
   console.log(`
-🏁 LLM Processing completed.
-   Processed : ${totalProcessed}
-   Skipped   : ${totalSkipped}
-   Failed    : ${totalFailed}
+🏁 LLM Processing завершено.
+   Оброблено повністю : ${totalProcessed}
+   Пропущено (є data.json) : ${totalSkipped}
+   Частково (мало даних)   : ${totalPartial}
+   Помилка                 : ${totalFailed}
 `);
 }
 
 run().catch(err => {
-  console.error('💥 Fatal error:', err);
+  console.error('💥 Критична помилка:', err);
   process.exit(1);
 });
