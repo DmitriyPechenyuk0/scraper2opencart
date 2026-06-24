@@ -32,10 +32,40 @@ function getMd5(buffer: Buffer): string {
   return crypto.createHash('md5').update(buffer).digest('hex');
 }
 
-/** Extracts slug from a product URL.
- *  e.g. https://ajax.systems/ua/products/starterkit/ → starterkit */
+/**
+ * Extracts a clean, filesystem-safe slug from a product URL.
+ *
+ * Handles all current provider URL formats:
+ *   ajax-systems  : https://ajax.systems/ua/products/starterkit/          → starterkit
+ *   viatec        : https://viatec.ua/product/DH-IPC-HDW2449T-S-IL-28    → dh-ipc-hdw2449t-s-il-28
+ *   seven-systems : https://seven-systems.com.ua/ua/p1579328965-foo.html  → p1579328965-foo
+ *   bezpeka-shop  : https://www.bezpeka-shop.com/ua/product/bmv-340srn/   → bmv-340srn
+ */
 function slugFromUrl(url: string): string {
-  return url.replace(/\/$/, '').split('/').pop()!;
+  try {
+    const pathname = new URL(url).pathname;
+    let slug = pathname
+      .replace(/\/+$/, '')        // strip trailing slashes
+      .split('/')
+      .pop() || 'unknown';
+
+    // Strip .html / .htm extensions (seven-systems uses them)
+    slug = slug.replace(/\.html?$/i, '');
+
+    // Lowercase for consistent folder naming
+    slug = slug.toLowerCase();
+
+    // Replace any non-filesystem-safe chars with dashes
+    slug = slug.replace(/[^a-z0-9_-]/g, '-');
+
+    // Collapse repeated dashes & trim
+    slug = slug.replace(/-{2,}/g, '-').replace(/^-+|-+$/g, '');
+
+    return slug || 'unknown';
+  } catch {
+    // Fallback for malformed URLs
+    return url.replace(/[^a-zA-Z0-9_-]/g, '-').slice(0, 80) || 'unknown';
+  }
 }
 
 /**
@@ -153,8 +183,8 @@ async function scrollToBottom(page: Page): Promise<void> {
     scrollAttempts++;
   }
 
-  // Wait for any lazy-triggered network requests to fire and resolve
-  await page.waitForLoadState('networkidle').catch(() => {});
+  // Wait for any lazy-triggered network requests to fire and resolve (capped at 5s)
+  await page.waitForLoadState('networkidle', { timeout: 5000 }).catch(() => {});
 
   // Extra wait to give async response handlers time to capture image buffers
   await page.waitForTimeout(2000);
@@ -275,25 +305,27 @@ async function downloadImage(context: BrowserContext, url: string): Promise<Buff
   return null;
 }
 
-/** Downloads a single product: HTML + images */
+/** Downloads a single product: HTML + images.
+ *  Returns 'skipped' if already complete, 'downloaded' on success. Throws on error. */
 async function downloadProduct(
   productUrl: string,
   providerKey: string,
-  context: BrowserContext
-): Promise<void> {
-  const slug = slugFromUrl(productUrl);
-  const productDir = path.join(STORAGE_DIR, providerKey, slug);
+  context: BrowserContext,
+  slug?: string
+): Promise<'downloaded' | 'skipped'> {
+  const productSlug = slug || slugFromUrl(productUrl);
+  const productDir = path.join(STORAGE_DIR, providerKey, productSlug);
   const imagesDir = path.join(productDir, 'images');
   const rawHtmlPath = path.join(productDir, 'raw_page.html');
   const metadataPath = path.join(productDir, 'metadata.json');
 
   // Idempotency: skip already-completed products
   if (fs.existsSync(rawHtmlPath) && fs.existsSync(metadataPath)) {
-    console.log(`  Skip (already downloaded): ${slug}`);
-    return;
+    console.log(`  Skip (already downloaded): ${productSlug}`);
+    return 'skipped';
   }
 
-  console.log(`  Downloading: ${slug}`);
+  console.log(`  Downloading: ${productSlug}`);
 
   // Clean partial download if exists
   if (fs.existsSync(productDir)) {
@@ -338,7 +370,13 @@ async function downloadProduct(
   });
 
   try {
-    await page.goto(productUrl, { waitUntil: 'networkidle', timeout: 60_000 });
+    // Try navigating with 'load' first (safer and faster than 'networkidle')
+    try {
+      await page.goto(productUrl, { waitUntil: 'load', timeout: 30_000 });
+    } catch (e: any) {
+      console.warn(`    ⚠️  page.goto 'load' timed out or failed (${e.message}). Falling back to 'domcontentloaded'...`);
+      await page.goto(productUrl, { waitUntil: 'domcontentloaded', timeout: 30_000 });
+    }
 
     // Scroll to trigger all lazy-loaded images and wait for them to load
     await scrollToBottom(page);
@@ -440,17 +478,19 @@ async function downloadProduct(
     const metadata: Metadata = {
       url: productUrl,
       providerKey,
-      slug,
+      slug: productSlug,
       downloadedAt: new Date().toISOString(),
       imagesCount: savedCount,
     };
     fs.writeFileSync(metadataPath, JSON.stringify(metadata, null, 2), 'utf-8');
 
     console.log(`    ✅ Done! raw_page.html (${(cleanedHtml.length / 1024).toFixed(1)} KB), ${savedCount} WebP images saved`);
-    console.log(`       (${uniqueImages.length} unique found, limited to ${MAX_IMAGES} max)`);
+    console.log(`       (${uniqueImages.length} unique found, limited to ${MAX_IMAGES} max, slug: ${productSlug})`);
+
+    return 'downloaded';
 
   } catch (err: any) {
-    console.error(`    💥 Error for ${slug}:`, err.stack || err.message);
+    console.error(`    💥 Error for ${productSlug}:`, err.stack || err.message);
     // Clean up incomplete folder so next run retries
     if (fs.existsSync(productDir)) {
       fs.rmSync(productDir, { recursive: true, force: true });
@@ -503,6 +543,8 @@ async function run(): Promise<void> {
   });
 
   try {
+    const stats: Record<string, { total: number; downloaded: number; skipped: number; failed: number }> = {};
+
     for (const [providerKey] of activeProviders) {
       if (stopRequested) break;
 
@@ -515,6 +557,23 @@ async function run(): Promise<void> {
       const productUrls: string[] = JSON.parse(fs.readFileSync(linksFile, 'utf-8'));
       console.log(`\n🚀 Provider: "${providerKey}" — ${productUrls.length} products`);
 
+      const providerStats = { total: productUrls.length, downloaded: 0, skipped: 0, failed: 0 };
+      stats[providerKey] = providerStats;
+
+      // Detect duplicate slugs within the same provider and make them unique
+      const slugCounts = new Map<string, number>();
+      const urlToSlug = new Map<string, string>();
+
+      for (const url of productUrls) {
+        let slug = slugFromUrl(url);
+        const count = slugCounts.get(slug) || 0;
+        slugCounts.set(slug, count + 1);
+        if (count > 0) {
+          slug = `${slug}--${count}`;
+        }
+        urlToSlug.set(url, slug);
+      }
+
       for (let i = 0; i < productUrls.length; i++) {
         if (stopRequested) {
           console.log('✋ Stopping at user request.');
@@ -522,17 +581,32 @@ async function run(): Promise<void> {
         }
 
         const url = productUrls[i];
-        console.log(`\n[${i + 1}/${productUrls.length}] ${slugFromUrl(url)}`);
+        const slug = urlToSlug.get(url)!;
+        console.log(`\n[${i + 1}/${productUrls.length}] ${slug}`);
 
         try {
-          await downloadProduct(url, providerKey, context);
+          const result = await downloadProduct(url, providerKey, context, slug);
+          if (result === 'skipped') {
+            providerStats.skipped++;
+          } else {
+            providerStats.downloaded++;
+          }
         } catch {
+          providerStats.failed++;
           // Already logged; continue with next product
         }
       }
 
       console.log(`\n✅ Finished provider: ${providerKey}`);
     }
+
+    // ─── Summary ──────────────────────────────────────────────────────────
+    console.log('\n📊 Download Summary:');
+    console.log('─'.repeat(60));
+    for (const [key, s] of Object.entries(stats)) {
+      console.log(`  ${key}: ${s.total} total, ${s.downloaded} downloaded, ${s.skipped} skipped, ${s.failed} failed`);
+    }
+    console.log('─'.repeat(60));
   } finally {
     await context.close();
     await browser.close();

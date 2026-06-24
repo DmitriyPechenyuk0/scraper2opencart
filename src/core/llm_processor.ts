@@ -375,9 +375,6 @@ async function processProduct(
   }
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
-// Головний цикл
-// ─────────────────────────────────────────────────────────────────────────────
 async function run(): Promise<void> {
   if (!fs.existsSync(PROVIDERS_CONFIG_PATH)) {
     console.error(`❌ providers.json not found at ${PROVIDERS_CONFIG_PATH}`);

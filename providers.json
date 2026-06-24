@@ -1,16 +1,16 @@
 {
   "ajax-systems": {
-    "involved": true,
+    "involved": false,
     "url": "https://ajax.systems/ua/products/",
     "scraper": "ajax_links.ts"
   },
   "viatec": {
-    "involved": true,
+    "involved": false,
     "url": "https://viatec.ua/catalog/cameras/0:0;tip-cameri:ip-kamera;proizvoditel:dahua,hikvision,imou",
     "scraper": "viatec_links.ts"
   },
   "seven-systems": {
-    "involved": true,
+    "involved": false,
     "url": "https://seven-systems.com.ua/ua/product_list",
     "scraper": "seven_systems_links.ts"
   },
@@ -20,3 +20,5 @@
     "scraper": "bezpeka_shop_links.ts"
   }
 }
+
+
