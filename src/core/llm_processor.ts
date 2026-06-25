@@ -2,6 +2,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { z } from 'zod';
+import { GoogleGenAI } from '@google/genai';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -10,11 +11,21 @@ const PROJECT_ROOT = path.resolve(__dirname, '../..');
 const STORAGE_DIR = path.join(PROJECT_ROOT, 'storage');
 const PROVIDERS_CONFIG_PATH = path.join(PROJECT_ROOT, 'providers.json');
 
-// ─── llama.cpp server (OpenAI-compatible API) ────────────────────────────────
+// ─── API CONFIGURATION ────────────────────────────────────────────────────────
+// Выбор провайдера: 'local' (llama.cpp) или 'gemini' (Google Gemini API через официальный SDK)
+let API_PROVIDER: 'local' | 'gemini' = 'gemini';
+
+const GEMINI_API_KEY = process.env.GEMINI_API_KEY || '';
+
 const LLAMA_URL = 'http://127.0.0.1:8080/v1/chat/completions';
-// Модель: llama.cpp не требует имени — передаём произвольную строку.
-// Если нужна конкретная — поменяй ниже.
 const LLAMA_MODEL = 'local-model';
+const GEMINI_MODEL = 'gemini-3.1-flash-lite';
+
+const API_URL = LLAMA_URL;
+const API_MODEL = (API_PROVIDER as string) === 'gemini' ? GEMINI_MODEL : LLAMA_MODEL;
+
+const ai = new GoogleGenAI({ apiKey: GEMINI_API_KEY || 'dummy_key' });
+
 const MAX_RETRIES = 3;
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -97,6 +108,7 @@ export type PartialProductData = z.infer<typeof PartialProductSchema>;
 // Фіксований словник категорій
 // ─────────────────────────────────────────────────────────────────────────────
 const ALLOWED_CATEGORIES = [
+  // === Охоронні системи та Сигналізації ===
   'Охоронні системи > Стартові комплекти',
   'Охоронні системи > Хаби',
   'Охоронні системи > Датчики руху',
@@ -106,13 +118,59 @@ const ALLOWED_CATEGORIES = [
   'Охоронні системи > Сирени',
   'Охоронні системи > Брелоки і клавіатури',
   'Охоронні системи > Модулі і розширювачі',
+  'Сигналізації',
+
+  // === Відеоспостереження ===
+  'Відеоспостереження > Камери',
+  'Відеоспостереження > Реєстратори',
+  'Відеореєстратори',
+  'Відеореєстратори > IP Відеореєстратори',
+  'Відеореєстратори > XVR Відеореєстратори',
+  'Камери відеоспостереження',
+  'Камери відеоспостереження > 4G Відеокамери',
+  'Камери відеоспостереження > AHD Відеокамери',
+  'Камери відеоспостереження > IP Відеокамери',
+  'Камери відеоспостереження > PTZ Відеокамери',
+  'Камери відеоспостереження > WiFi Відеокамери',
+  'Комплекти відеоспостереження',
+  'Комплекти відеоспостереження > IP Комплекти',
+
+  // === Мережеве обладнання ===
+  '4G WiFi Роутери',
+  'Коммутатори POE', // Залишено подвійне 'м', як у тексті донора
+
+  // === Домофонія ===
+  'Домофони > IP Викличні панелі',
+  'Домофони > IP Монітори',
+  'Домофони > Монітори',
+  'Домофони > Викличні панелі',
+
+  // === Системи контролю доступу ===
+  'Системи контролю доступу > Контролери',
+  'Системи контролю доступу > Зчитувачі',
+  'Системи контролю доступу > Замки',
+  'Системи контролю доступу > Кнопки виходу',
+  'Системи контролю доступу > Ключі доступу (RFID картки та брелки)',
+
+  // === Джерела живлення ===
+  'Джерела живлення',
+  'Джерела живлення > Блоки живлення',
+  'Джерела живлення > Джерела безперебійного живлення 12-24В',
+
+  // === Пожежна безпека та Захист від затоплення ===
   'Пожежна безпека > Датчики диму',
   'Пожежна безпека > Датчики вогню',
   'Пожежна безпека > Датчики газу',
   'Захист від затоплення > Датчики протікання',
-  'Відеоспостереження > Камери',
-  'Відеоспостереження > Реєстратори',
+
+  // === Автоматизація ===
   'Автоматизація > Розумний дім',
+
+  // === Додаткове обладнання та Аксесуари ===
+  'Додаткове обладнання',
+  'Додаткове обладнання > Жорсткі диски',
+  'Додаткове обладнання > Кабель',
+  'Додаткове обладнання > Карти пам\'яті', // Одинарні лапки екрановані
   'Аксесуари > Кріплення і монтаж',
   'Аксесуари > Блоки живлення',
 ] as const;
@@ -122,26 +180,31 @@ const ALLOWED_CATEGORIES = [
 // ─────────────────────────────────────────────────────────────────────────────
 function buildSystemPrompt(): string {
   return `Ти — досвідчений контент-менеджер інтернет-магазину систем безпеки та відеоспостереження.
-Твоя задача — проаналізувати очищений HTML сторінки товару і повернути ТІЛЬКИ JSON-об'єкт без будь-якого іншого тексту.
+Твоя задача — проаналізувати очищений текст сторінки і повернути JSON-об'єкт ТІЛЬКИ для головного товару цієї сторінки.
 
-ОБОВ'ЯЗКОВІ ПРАВИЛА:
-1. Повертай ТІЛЬКИ валідний JSON. Без markdown-обгортки, без коментарів, без пояснень.
+КРИТИЧНО ВАЖЛИВІ ПРАВИЛА КОНТЕКСТУ:
+1. ІГНОРУЙ будь-який текст, що не стосується головного товару: навігаційне меню, посилання в футері, інформацію про доставку та оплату, відгуки покупців, статті блогу, блоки "Схожі товари", "З цим товаром також купують", списки брендів та інформацію про кукі-файли чи налаштування згоди.
+2. Всі поля JSON (name, description, attributes, price тощо) повинні містити інформацію СТРОГО про ОДИН головний товар, сторінці якого присвячений цей текст.
+3. НЕ використовуй характеристики інших товарів (наприклад, супутніх чи аксесуарів), що згадуються далі по тексту сторінки.
+
+ОБОВ'ЯЗКОВІ ПРАВИЛА ФОРМАТУВАННЯ:
+1. Повертай ТІЛЬКИ валідний JSON. Без markdown-обгортки (\`\`\`json ... \`\`\`), без коментарів, без пояснень.
 2. Використовуй мову оригінального сайту (якщо сайт українською — пиши українською).
 3. Якщо якоїсь інформації немає на сторінці — залишай поле порожнім рядком "", числове поле — 0, масив — [].
 4. НЕ вигадуй дані яких немає на сторінці.
-5. description — HTML з тегами <p>, <ul>, <li>, <strong>. Інформативний, на основі реальних даних.
+5. description — HTML з тегами <p>, <ul>, <li>, <strong>. Інформативний, на основі реального опису головного товару.
 6. meta_title — до 160 символів, включає назву і ключове слово.
-7. meta_description — 150–300 символів, заклик до дії + переваги.
+7. meta_description — 150–300 символів, заклики + переваги.
 8. meta_keyword — 5–10 ключових слів через кому.
 9. tags — 3–8 тегів через кому.
 10. category — ОБОВ'ЯЗКОВО вибери ОДНУ категорію з наступного списку (точний текст):
 ${ALLOWED_CATEGORIES.map(c => `   - "${c}"`).join('\n')}
-11. model і sku — з реальних даних на сторінці. Якщо не знайшов — "".
+11. model і sku — артикул та модель саме этого товару. Якщо не знайшов — "".
 12. price — числова ціна товару в гривнях (тільки число, без валюти). Якщо ціни немає — 0.
 13. weight — рядок з одиницями ("0.32 кг"). Якщо не знайшов — "".
 14. dimensions — рядок LxWxH з одиницями ("163 x 163 x 36 мм"). Якщо не знайшов — "".
-15. attributes — витягни ВСІ технічні характеристики. Якщо їх немає — [].
-16. in_stock — логічне значення (true/false). Поверни true якщо товар є в наявності (наприклад, "В наявності", "Є на складі", "Купити", "Додати до кошика"), поверни false якщо товару немає (наприклад, "Немає в наявності", "Закінчився", "Немає на складі", "Повідомити про наявність").
+15. attributes — витягни технічні характеристики тільки для головного товару (наприклад: group - "Технічні характеристики", name - "Дальність передачі", value - "до 2000 м"). Якщо їх немає — [].
+16. in_stock — логічне значення (true/false) наявності головного товару.
 
 СТРУКТУРА JSON:
 {
@@ -163,7 +226,26 @@ ${ALLOWED_CATEGORIES.map(c => `   - "${c}"`).join('\n')}
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// llama.cpp API (OpenAI-compatible /v1/chat/completions)
+// Rate Limiter для Gemini (максимум 12 запитів на хвилину)
+// ─────────────────────────────────────────────────────────────────────────────
+let lastRequestTime = 0;
+
+async function throttleRateLimit(): Promise<void> {
+  const now = Date.now();
+  const timeSinceLast = now - lastRequestTime;
+  const minInterval = 5000; // 5 секунд = максимум 12 запитів на хвилину
+
+  if (timeSinceLast < minInterval) {
+    const delay = minInterval - timeSinceLast;
+    console.log(`    ⏳ Очікування ліміту квот (пауза ${delay} мс)...`);
+    await new Promise(resolve => setTimeout(resolve, delay));
+  }
+
+  lastRequestTime = Date.now();
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// llama.cpp / Gemini API
 // ─────────────────────────────────────────────────────────────────────────────
 interface ChatMessage {
   role: 'system' | 'user' | 'assistant';
@@ -171,16 +253,67 @@ interface ChatMessage {
 }
 
 async function callLlama(messages: ChatMessage[]): Promise<string> {
-  const response = await fetch(LLAMA_URL, {
+  if (API_PROVIDER === 'gemini') {
+    if (!GEMINI_API_KEY) {
+      throw new Error('Змінна оточення GEMINI_API_KEY не задана!');
+    }
+
+    await throttleRateLimit();
+
+    const systemMessage = messages.find(m => m.role === 'system');
+    const system_instruction = systemMessage ? systemMessage.content : undefined;
+
+    const steps = messages
+      .filter(m => m.role !== 'system')
+      .map(msg => {
+        if (msg.role === 'assistant') {
+          return {
+            type: 'model_output' as const,
+            content: [{ type: 'text' as const, text: msg.content }],
+          };
+        } else {
+          return {
+            type: 'user_input' as const,
+            content: [{ type: 'text' as const, text: msg.content }],
+          };
+        }
+      });
+
+    const interaction = await ai.interactions.create({
+      model: GEMINI_MODEL,
+      system_instruction,
+      input: steps,
+      response_format: {
+        type: 'text',
+        mime_type: 'application/json',
+      },
+      generation_config: {
+        temperature: 0.1,
+        max_output_tokens: 8192,
+      },
+    });
+
+    const content = interaction.output_text;
+    if (!content) {
+      throw new Error('Gemini Interactions API returned empty response content');
+    }
+    return content;
+  }
+
+  const headers: Record<string, string> = {
+    'Content-Type': 'application/json',
+  };
+
+  const response = await fetch(API_URL, {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
+    headers,
     body: JSON.stringify({
-      model: LLAMA_MODEL,
+      model: API_MODEL,
       messages,
       response_format: { type: 'json_object' }, // гарантує JSON-відповідь
       stream: false,
       temperature: 0.1,   // мінімум галюцинацій
-      max_tokens: 8192,   // достатньо для великих товарів з 25+ атрибутами
+      max_tokens: 8192,   // достатньо для великих товарів
     }),
   });
 
@@ -219,18 +352,99 @@ function extractJson(raw: string): string {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
+// Очищення тексту сторінки від зайвих HTML тегів та форматування
+// ─────────────────────────────────────────────────────────────────────────────
+function cleanRawText(rawHtml: string): string {
+  let text = rawHtml;
+
+  // 1. Видаляємо коментарі
+  text = text.replace(/<!--[\s\S]*?-->/g, '');
+
+  // 2. Видаляємо скрипти, стилі, noscript, iframe, форми разом з контентом
+  text = text.replace(/<script\b[^>]*>[\s\S]*?<\/script>/gi, '');
+  text = text.replace(/<style\b[^>]*>[\s\S]*?<\/style>/gi, '');
+  text = text.replace(/<noscript\b[^>]*>[\s\S]*?<\/noscript>/gi, '');
+  text = text.replace(/<iframe\b[^>]*>[\s\S]*?<\/iframe>/gi, '');
+  text = text.replace(/<form\b[^>]*>[\s\S]*?<\/form>/gi, '');
+
+  // 3. Замінюємо блочні теги та перенесення рядків на символи нового рядка для читабельності структури
+  text = text.replace(/<\/(p|div|tr|li|h1|h2|h3|h4|h5|h6|table|header|footer|nav|aside)>\s*/gi, '\n');
+  text = text.replace(/<(br|hr)\b[^>]*\/?>\s*/gi, '\n');
+
+  // 4. Видаляємо всі інші HTML-теги
+  text = text.replace(/<[^>]+>/g, ' ');
+
+  // 5. Декодуємо загальні HTML-сутності
+  const htmlEntities: Record<string, string> = {
+    '&nbsp;': ' ',
+    '&amp;': '&',
+    '&quot;': '"',
+    '&lt;': '<',
+    '&gt;': '>',
+    '&apos;': "'",
+    '&#39;': "'",
+    '&#039;': "'",
+    '&ndash;': '–',
+    '&mdash;': '—',
+  };
+  text = text.replace(/&[a-zA-Z0-9#]+;/g, (match) => htmlEntities[match] || match);
+
+  // 6. Форматуємо пробіли та пусті рядки, фільтруємо сміттєві рядки (кукі, згоди, тощо)
+  const noisePatterns = [
+    /cookie/i,
+    /конфиденциальность/i,
+    /конфіденційність/i,
+    /принять все/i,
+    /прийняти всі/i,
+    /отклонить/i,
+    /відхилити/i,
+    /настроить/i,
+    /налаштувати/i,
+    /политика использования/i,
+    /політика використання/i,
+    /согласие/i,
+    /згода/i,
+    /продолжительность/i,
+    /тривалість/i,
+    /описание/i,
+    /опис/i,
+    /срок действия/i,
+    /термін дії/i,
+    /сеанс/i,
+    /always active/i,
+    /всегда активные/i,
+    /завжди активні/i,
+    /no description/i,
+    /description is currently not available/i,
+    /^\d+\s+(year|month|day|hour|minute|second|week|год|лет|месяц|день|час|минут|секунд|недел|тиж|міс|рік|рок|годин|хвил|дней|часов|минуты|секунды|недели|месяца|дня|день|минута|секунда|сеанс)/i,
+    /^(necessar|functional|analytics|advertis|необходим|функциональ|аналитик|реклам)/i,
+  ];
+
+  text = text.split('\n')
+    .map(line => line.replace(/[ \t]+/g, ' ').trim()) // об'єднуємо пробіли в рядку
+    .filter(line => {
+      if (line.length === 0) return false;
+      if (noisePatterns.some(pattern => pattern.test(line))) return false;
+      return true;
+    })
+    .join('\n');                                      // об'єднуємо через один символ нового рядка
+
+  return text.trim();
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
 // Цикл валідації з повторними запитами
 // Якщо після MAX_RETRIES повна схема не проходить — зберігаємо частковий запис
 // ─────────────────────────────────────────────────────────────────────────────
 async function processWithRetry(
-  html: string,
+  text: string,
   slug: string
 ): Promise<ProductData | PartialProductData> {
   const messages: ChatMessage[] = [
     { role: 'system', content: buildSystemPrompt() },
     {
       role: 'user',
-      content: `Проаналізуй цей HTML сторінки товару і поверни JSON:\n\n${html}`,
+      content: `Проаналізуй цей текст сторінки товару і поверни JSON:\n\n${text}`,
     },
   ];
 
@@ -238,7 +452,8 @@ async function processWithRetry(
   let lastRaw    = '';
 
   for (let attempt = 1; attempt <= MAX_RETRIES; attempt++) {
-    console.log(`    🤖 llama.cpp запит ${attempt}/${MAX_RETRIES}...`);
+    const providerName = API_PROVIDER === 'gemini' ? 'Gemini' : 'llama.cpp';
+    console.log(`    🤖 ${providerName} запит ${attempt}/${MAX_RETRIES}...`);
 
     let rawResponse: string;
     try {
@@ -315,8 +530,9 @@ async function processWithRetry(
     }
   }
 
+  const providerName = API_PROVIDER === 'gemini' ? 'Gemini' : 'llama.cpp';
   throw new Error(
-    `Не вдалося отримати валідний JSON від llama.cpp для "${slug}" після ${MAX_RETRIES} спроб. ` +
+    `Не вдалося отримати валідний JSON від ${providerName} для "${slug}" після ${MAX_RETRIES} спроб. ` +
     `Raw preview: ${lastRaw.slice(0, 500)}`
   );
 }
@@ -351,15 +567,16 @@ async function processProduct(providerKey: string, slug: string): Promise<void> 
   console.log(`  🔬 Обробка: ${slug}`);
 
   const html = fs.readFileSync(rawHtmlPath, 'utf-8');
+  const cleanedText = cleanRawText(html);
 
-  // Тримаємо HTML в межах контексту моделі (~8k токенів ≈ ~32k символів)
-  const MAX_HTML_CHARS = 32_000;
-  const truncatedHtml = html.length > MAX_HTML_CHARS
-    ? html.slice(0, MAX_HTML_CHARS) + '\n<!-- HTML truncated -->'
-    : html;
+  // Тримаємо очищений текст в межах контексту моделі (~16k символів)
+  const MAX_TEXT_CHARS = 16_000;
+  const truncatedText = cleanedText.length > MAX_TEXT_CHARS
+    ? cleanedText.slice(0, MAX_TEXT_CHARS) + '\n[Text truncated...]'
+    : cleanedText;
 
   try {
-    const productData = await processWithRetry(truncatedHtml, slug);
+    const productData = await processWithRetry(truncatedText, slug);
     fs.writeFileSync(dataJsonPath, JSON.stringify(productData, null, 2), 'utf-8');
 
     const isPartial = '_partial' in productData && productData._partial;
@@ -395,22 +612,35 @@ async function run(): Promise<void> {
     return;
   }
 
-  // ── Перевірка доступності llama.cpp ──────────────────────────────────────
-  console.log('🔍 Перевірка з\'єднання з llama.cpp (http://127.0.0.1:8080)...');
-  try {
-    const health = await fetch('http://127.0.0.1:8080/health', { signal: AbortSignal.timeout(5000) });
-    if (health.ok) {
-      console.log('✅ llama.cpp доступний.\n');
-    } else {
-      console.warn(`⚠️  llama.cpp відповів статусом ${health.status}. Продовжуємо.\n`);
+  // ── Перевірка доступності API ─────────────────────────────────────────────
+  if (API_PROVIDER === 'gemini') {
+    console.log('🔍 Використовуємо Google Gemini API...');
+    if (!GEMINI_API_KEY) {
+      console.error(
+        '❌ Змінна оточення GEMINI_API_KEY не задана!\n' +
+        '   Задайте її перед запуском:\n' +
+        '   export GEMINI_API_KEY="ваш_ключ_api"\n'
+      );
+      process.exit(1);
     }
-  } catch {
-    console.error(
-      '❌ llama.cpp недоступний на 127.0.0.1:8080.\n' +
-      '   Переконайтесь що сервер запущено командою:\n' +
-      '   ./llama-server -m <model.gguf> --port 8080 --host 127.0.0.1\n'
-    );
-    process.exit(1);
+    console.log('✅ Ключ GEMINI_API_KEY задано. Продовжуємо.\n');
+  } else {
+    console.log('🔍 Перевірка з\'єднання з llama.cpp (http://127.0.0.1:8080)...');
+    try {
+      const health = await fetch('http://127.0.0.1:8080/health', { signal: AbortSignal.timeout(5000) });
+      if (health.ok) {
+        console.log('✅ llama.cpp доступний.\n');
+      } else {
+        console.warn(`⚠️  llama.cpp відповів статусом ${health.status}. Продовжуємо.\n`);
+      }
+    } catch {
+      console.error(
+        '❌ llama.cpp недоступний на 127.0.0.1:8080.\n' +
+        '   Переконайтесь що сервер запущено командою:\n' +
+        '   ./llama-server -m <model.gguf> --port 8080 --host 127.0.0.1\n'
+      );
+      process.exit(1);
+    }
   }
 
   let totalProcessed = 0;

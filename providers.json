@@ -1,10 +1,10 @@
 {
   "ajax-systems": {
-    "involved": false,
-    "url": "https://ajax.systems/ua/products/",
+    "involved": true,
+    "url": "https://ajax.systems/ru-ua/catalogue/baseline-intrusion-protection/",
     "scraper": "ajax_links.ts",
-    "maxPages": 2,
-    "maxProducts": 20
+    "maxPages": 300,
+    "maxProducts": 200
   },
   "viatec": {
     "involved": false,
@@ -21,7 +21,7 @@
     "maxProducts": 30
   },
   "bezpeka-shop": {
-    "involved": true,
+    "involved": false,
     "url": "https://www.bezpeka-shop.com/ua/catalog/videokamery_1/",
     "scraper": "bezpeka_shop_links.ts",
     "maxPages": 2,
