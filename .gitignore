@@ -7,3 +7,4 @@ storage/
 export/
 links_pool/
 scratch/
+.env
