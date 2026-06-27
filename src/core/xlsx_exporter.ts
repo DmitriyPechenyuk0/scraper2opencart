@@ -94,6 +94,60 @@ function detectManufacturer(name: string, providerKey: string): string {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
+// Очистка апострофов в тексте (замена на обычный прямой апостроф ')
+// ─────────────────────────────────────────────────────────────────────────────
+function cleanApostrophes(text: string): string {
+  if (!text) return '';
+  
+  // Декодируем HTML сущности в прямой модификатор апострофа U+02BC (ʼ)
+  // Это предотвращает конвертацию в &apos; библиотекой xlsx и решает проблему с отображением "apos" на сайте
+  let cleaned = text
+    .replace(/&apos;/g, 'ʼ')
+    .replace(/&#39;/g, 'ʼ')
+    .replace(/&#039;/g, 'ʼ')
+    .replace(/&amp;apos;/g, 'ʼ')
+    .replace(/&amp;#39;/g, 'ʼ')
+    .replace(/&amp;#039;/g, 'ʼ');
+
+  // Очищаем возможные артефакты "apos", возникшие ранее при некорректной очистке
+  cleaned = cleaned.replace(/([а-яА-ЯёЁіІїЇєЄґҐ])\s*apos\s*([а-яА-ЯёЁіІїЇєЄґҐ])/gi, '$1ʼ$2');
+
+  // Разделяем HTML по тегам, чтобы не заменить кавычки в атрибутах тегов
+  const parts = cleaned.split(/(<[^>]+>)/g);
+  for (let i = 0; i < parts.length; i++) {
+    // В текстовых блоках (вне тегов) заменяем любые одиночные кавычки и кривые апострофы на прямой U+02BC (ʼ)
+    if (!parts[i].startsWith('<')) {
+      parts[i] = parts[i]
+        .replace(/'/g, 'ʼ')
+        .replace(/`/g, 'ʼ')
+        .replace(/’/g, 'ʼ');
+    }
+  }
+  
+  return parts.join('');
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Рекурсивная очистка всех строковых полей в объекте от неправильных апострофов
+// ─────────────────────────────────────────────────────────────────────────────
+function cleanObjectApostrophes<T>(obj: T): T {
+  if (typeof obj === 'string') {
+    return cleanApostrophes(obj) as unknown as T;
+  }
+  if (Array.isArray(obj)) {
+    return obj.map(item => cleanObjectApostrophes(item)) as unknown as T;
+  }
+  if (obj !== null && typeof obj === 'object') {
+    const cleaned: any = {};
+    for (const key of Object.keys(obj)) {
+      cleaned[key] = cleanObjectApostrophes((obj as any)[key]);
+    }
+    return cleaned as T;
+  }
+  return obj;
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
 // Расширенный тип для data.json (поддержка двуязычного формата и старого)
 // ─────────────────────────────────────────────────────────────────────────────
 interface ExtendedProductData {
@@ -164,7 +218,7 @@ function parseWeight(weightStr: string | undefined): number {
 function wrapDescription(html: string | undefined): string {
   if (!html) return '';
   const trimmed = html.trim();
-  const targetPrefix = '<div style="font-family: \'Open Sans\', sans-serif; font-size: 13px; line-height: 1.5;">';
+  const targetPrefix = '<div style="font-family: Open Sans, sans-serif; font-size: 13px; line-height: 1.5;">';
   
   if (trimmed.startsWith(targetPrefix) && trimmed.endsWith('</div>')) {
     return trimmed;
@@ -319,7 +373,8 @@ async function run(): Promise<void> {
 
       let data: ExtendedProductData;
       try {
-        data = JSON.parse(fs.readFileSync(dataJsonPath, 'utf-8')) as ExtendedProductData;
+        const rawData = JSON.parse(fs.readFileSync(dataJsonPath, 'utf-8')) as ExtendedProductData;
+        data = cleanObjectApostrophes(rawData);
       } catch (err: unknown) {
         const msg = err instanceof Error ? err.message : String(err);
         console.error(`  ❌ Помилка читання data.json для "${slug}": ${msg}`);

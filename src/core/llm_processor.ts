@@ -15,7 +15,7 @@ const PROVIDERS_CONFIG_PATH = path.join(PROJECT_ROOT, 'providers.json');
 // Выбор провайдера: 'local' (llama.cpp) или 'gemini' (Google Gemini API через официальный SDK)
 let API_PROVIDER: 'local' | 'gemini' = 'gemini';
 
-const GEMINI_API_KEY = process.env.GEMINI_API_KEY || '';
+const GEMINI_API_KEY = "";
 
 const LLAMA_URL = 'http://127.0.0.1:8080/v1/chat/completions';
 const LLAMA_MODEL = 'local-model';
@@ -37,43 +37,60 @@ const MAX_RETRIES = 3;
 // пустую строку или пустой массив, и скрипт сохраняет то, что есть.
 // ─────────────────────────────────────────────────────────────────────────────
 const AttributeSchema = z.object({
-  group: z.string().min(1),
-  name:  z.string().min(1),
-  value: z.string().min(1),
+  group_ru: z.string().optional().default(''),
+  group_ua: z.string().min(1),
+  name_ru:  z.string().optional().default(''),
+  name_ua:  z.string().min(1),
+  value_ru: z.string().optional().default(''),
+  value_ua: z.string().min(1),
 });
 
 export const ProductSchema = z.object({
   // ── Контент ───────────────────────────────────────────────────────────────
-  name: z.string().min(2).max(255),
+  name_ru: z.string().min(2).max(255),
+  name_ua: z.string().min(2).max(255),
 
-  description: z
+  description_ru: z
     .string()
     .min(10)
-    .describe('HTML description. Must contain semantic product info.'),
+    .describe('HTML description in Russian.'),
+  description_ua: z
+    .string()
+    .min(10)
+    .describe('HTML description in Ukrainian.'),
 
   // ── SEO ───────────────────────────────────────────────────────────────────
-  meta_title: z.string().min(10).max(160),
+  meta_title_ru: z.string().min(10).max(160),
+  meta_title_ua: z.string().min(10).max(160),
 
-  meta_description: z.string().min(50).max(300),
+  meta_description_ru: z.string().min(50).max(300),
+  meta_description_ua: z.string().min(50).max(300),
 
-  meta_keyword: z
+  meta_keyword_ru: z
+    .string()
+    .min(3)
+    .max(255)
+    .describe('Comma-separated keywords'),
+  meta_keyword_ua: z
     .string()
     .min(3)
     .max(255)
     .describe('Comma-separated keywords'),
 
   // ── Теги ──────────────────────────────────────────────────────────────────
-  tags: z.string().max(255).optional().default(''),
+  tags_ru: z.string().max(255).optional().default(''),
+  tags_ua: z.string().max(255).optional().default(''),
 
   // ── Категорія ─────────────────────────────────────────────────────────────
-  category: z.string().min(1),
+  category_ru: z.string().min(1),
+  category_ua: z.string().min(1),
 
   // ── Ідентифікатори ────────────────────────────────────────────────────────
   model: z.string().max(64).optional().default(''),
   sku:   z.string().max(64).optional().default(''),
 
   // ── Ціна (oc_product.price) ───────────────────────────────────────────────
-  price: z.number().min(0).optional().default(0),
+  price: z.union([z.number(), z.string()]).optional().default(0),
 
   // ── Фізичні параметри ─────────────────────────────────────────────────────
   weight:     z.string().optional().default(''),
@@ -93,11 +110,16 @@ export type ProductData = z.infer<typeof ProductSchema>;
 // послаблені — якщо на сторінці мало даних, зберігаємо всё що є.
 // ─────────────────────────────────────────────────────────────────────────────
 const PartialProductSchema = ProductSchema.partial({
-  description:      true,
-  meta_title:       true,
-  meta_description: true,
-  meta_keyword:     true,
-  category:         true,
+  description_ru:      true,
+  description_ua:      true,
+  meta_title_ru:       true,
+  meta_title_ua:       true,
+  meta_description_ru: true,
+  meta_description_ua: true,
+  meta_keyword_ru:     true,
+  meta_keyword_ua:     true,
+  category_ru:         true,
+  category_ua:         true,
 }).extend({
   _partial: z.literal(true).optional(),  // маркер часткового запису
 });
@@ -180,7 +202,12 @@ const ALLOWED_CATEGORIES = [
 // ─────────────────────────────────────────────────────────────────────────────
 function buildSystemPrompt(): string {
   return `Ти — досвідчений контент-менеджер інтернет-магазину систем безпеки та відеоспостереження.
-Твоя задача — проаналізувати очищений текст сторінки і повернути JSON-об'єкт ТІЛЬКИ для головного товару цієї сторінки на двох мовах: російській (суфікс _ru) та українській (суфікс _ua).
+Твоя задача — проаналізувати очищений текст сторінки і повернути JSON-об'єкт тільки для головного товару цієї сторінки.
+
+УВАГА (МОВА ТА ПЕРЕКЛАД):
+1. Абсолютно весь текст у ВСІХ полях (включаючи поля з суфіксами _ru та _ua) має бути СТРОГО УКРАЇНСЬКОЮ МОВОЮ!
+2. Якщо оригінальний текст сторінки представлений російською чи іншою мовою — обов'язково повністю та якісно переклади його на українську мову.
+3. ПРАВИЛО ДЛЯ ВЛАСНИХ НАЗВ: Не перекладай і не транслітеруй власні назви брендів, торгових марок, лінійок продуктів, технологій чи моделей. Залишай їх в оригінальному написанні латиницею або кирилицею (наприклад, залишай без змін "Ajax", "StarterKit", "Hub", "MotionProtect", "Jeweller", "OS Malevich", "Hikvision", "Dahua", "SEVEN Systems" тощо).
 
 КРИТИЧНО ВАЖЛИВІ ПРАВИЛА КОНТЕКСТУ:
 1. ІГНОРУЙ будь-який текст, що не стосується головного товару: навігаційне меню, посилання в футері, інформацію про доставку та оплату, відгуки покупців, статті блогу, блоки "Схожі товари", "З цим товаром також купують", списки брендів та інформацію про кукі-файли чи налаштування згоди.
@@ -189,69 +216,68 @@ function buildSystemPrompt(): string {
 
 ОБОВ'ЯЗКОВІ ПРАВИЛА ФОРМАТУВАННЯ:
 1. Повертай ТІЛЬКИ валідний JSON. Без markdown-обгортки (\`\`\`json ... \`\`\`), без коментарів, без пояснень.
-2. Для кожного текстового поля обов'язково генеруй значення двома мовами:
-   - російською (поля з суфіксом _ru, наприклад name_ru, description_ru)
-   - українською (поля з суфіксом _ua, наприклад name_ua, description_ua)
-   Якщо оригінальний текст сторінки представлений лише однією мовою, обов'язково якісно переклади його на іншу мову.
+2. Для кожного текстового поля обов'язково генеруй значення українською мовою для обох версій:
+   - версія з суфіксом _ru (наприклад, name_ru, description_ru) — має бути заповнена українською мовою!
+   - версія з суфіксом _ua (наприклад, name_ua, description_ua) — має бути заповнена українською мовою!
 3. Якщо якоїсь інформації немає на сторінці — залишай поле порожнім рядком "", числове поле — 0, масив — [].
 4. НЕ вигадуй дані яких немає на сторінці.
-5. description_ru та description_ua — HTML-опис головного товару відповідно російською та українською мовами. Правила оформлення:
-   - Весь опис обов'язково оберни в один загальний контейнер: <div style="font-family: 'Open Sans', sans-serif; font-size: 13px; line-height: 1.5;">...</div>
+5. description_ru та description_ua — HTML-опис головного товару українською мовою для обох полів. Правила оформлення:
+   - Весь опис обов'язково оберни в один загальний контейнер: <div style="font-family: Open Sans, sans-serif; font-size: 13px; line-height: 1.5;">...</div>
    - Всередині контейнера використовуй теги <p> для абзаців, <ul>/<li> для списків переваг.
-   - Назву товару при першій згадці або в заголовку опису виділяй жирним за допомогою <strong>Назва товару</strong> (відповідно мовою поля).
+   - Назву товару при першій згадці або в заголовку опису виділяй жирним за допомогою <strong>Назва товару</strong>.
    - Також виділяй жирним за допомогою <strong>...</strong> ключові слова, важливі переваги та ключові характеристики товару в тексті для зручності читання.
    - Текст має бути структурованим, інформативним та легким для сприйняття.
-6. meta_title_ru та meta_title_ua — до 160 символів відповідною мовою, включає назву і ключове слово.
-7. meta_description_ru та meta_description_ua — 150–300 символів відповідною мовою, заклики + переваги.
-8. meta_keyword_ru та meta_keyword_ua — 5–10 ключових слів відповідною мовою через кому.
-9. tags_ru та tags_ua — 3–8 тегів відповідною мовою через кому.
-10. category_ru та category_ua — ОБОВ'ЯЗКОВО вибери ОДНУ категорію з наступного списку дозволених категорій (точний текст для _ua та якісний переклад для _ru):
+6. meta_title_ru та meta_title_ua — до 160 символів українською мовою, включає назву і ключове слово.
+7. meta_description_ru та meta_description_ua — 150–300 символів українською мовою, заклики + переваги.
+8. meta_keyword_ru та meta_keyword_ua — 5–10 ключових слів українською мовою через кому.
+9. tags_ru та tags_ua — 3–8 тегів українською мовою через кому.
+10. category_ru та category_ua — ОБОВ'ЯЗКОВО вибери ОДНУ категорію з наступного списку дозволених категорій українською мовою для обох полів:
     Перелік категорій українською:
 ${ALLOWED_CATEGORIES.map(c => `   - "${c}"`).join('\n')}
-    Для category_ru переклади вибрану категорію на російську мову (наприклад, 'Охоронні системи > Хаби' -> 'Охранные системы > Хабы', 'Джерела живлення > Блоки живлення' -> 'Источники питания > Блоки питания').
 11. model і sku — артикул та модель саме этого товару. Якщо не знайшов — "".
 12. price — ціна товару в гривнях (тільки число, без валюти). Якщо на сайті замість ціни вказано "уточнюйте ціну", "ціна за запитом" тощо — повертай рядок "Уточнюйте ціну". Якщо ціни немає взагалі — 0.
 13. weight — рядок з одиницями ("0.32 кг"). Якщо не знайшов — "".
 14. dimensions — рядок LxWxH з одиницями ("163 x 163 x 36 мм"). Якщо не знайшов — "".
-15. attributes — масив характеристик головного товару. Кожна характеристика повинна містити:
-    - group_ru та group_ua (наприклад, "Технические характеристики" та "Технічні характеристики")
-    - name_ru та name_ua (наприклад, "Дальность передачи" та "Дальність передачі")
-    - value_ru та value_ua (наприклад, "до 2000 м" та "до 2000 м")
+15. attributes — масив характеристик головного товару. Кожна характеристика повинна містити значення українською мовою для обох версій полів:
+    - group_ru та group_ua (обидва поля мають містити назву групи українською мовою, наприклад, "Технічні характеристики")
+    - name_ru та name_ua (обидва поля мають містити назву характеристики українською мовою, наприклад, "Дальність звʼязку")
+    - value_ru та value_ua (обидва поля мають містити значення характеристики українською мовою, наприклад, "до 2000 м")
     Якщо характеристик немає — [].
 16. in_stock — логічне значення (true/false) наявності головного товару.
 
 СТРУКТУРА JSON:
 {
-  "name_ru": "string (2–255 символів)",
-  "name_ua": "string (2–255 символів)",
-  "description_ru": "string (HTML)",
-  "description_ua": "string (HTML)",
-  "meta_title_ru": "string (10–160 символів)",
-  "meta_title_ua": "string (10–160 символів)",
-  "meta_description_ru": "string (50–300 символів)",
-  "meta_description_ua": "string (50–300 символів)",
-  "meta_keyword_ru": "string",
-  "meta_keyword_ua": "string",
-  "tags_ru": "string",
-  "tags_ua": "string",
-  "category_ru": "string (переклад дозволеної категорії російською)",
-  "category_ua": "string (дозволена категорія українською)",
+  "name_ru": "string (заповнювати українською мовою)",
+  "name_ua": "string (заповнювати українською мовою)",
+  "description_ru": "string (HTML українською мовою)",
+  "description_ua": "string (HTML українською мовою)",
+  "meta_title_ru": "string (українською мовою)",
+  "meta_title_ua": "string (українською мовою)",
+  "meta_description_ru": "string (українською мовою)",
+  "meta_description_ua": "string (українською мовою)",
+  "meta_keyword_ru": "string (українською мовою)",
+  "meta_keyword_ua": "string (українською мовою)",
+  "tags_ru": "string (українською мовою)",
+  "tags_ua": "string (українською мовою)",
+  "category_ru": "string (категорія українською мовою)",
+  "category_ua": "string (категорія українською мовою)",
   "model": "string",
   "sku": "string",
-  "price": 0, // або рядок, наприклад: "Уточнюйте ціну"
+  "price": 0, // або рядок
   "weight": "string",
   "dimensions": "string",
   "attributes": [{
-    "group_ru": "string",
-    "group_ua": "string",
-    "name_ru": "string",
-    "name_ua": "string",
-    "value_ru": "string",
-    "value_ua": "string"
+    "group_ru": "string (українською мовою)",
+    "group_ua": "string (українською мовою)",
+    "name_ru": "string (українською мовою)",
+    "name_ua": "string (українською мовою)",
+    "value_ru": "string (українською мовою)",
+    "value_ua": "string (українською мовою)"
   }],
   "in_stock": true
 }`;
 }
+
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Rate Limiter для Gemini (максимум 12 запитів на хвилину)
@@ -460,6 +486,57 @@ function cleanRawText(rawHtml: string): string {
   return text.trim();
 }
 
+function cleanApostrophes(text: string): string {
+  if (!text) return '';
+  
+  // Декодуємо HTML сущності в прямий модифікатор апострофа U+02BC (ʼ)
+  // Це запобігає конвертації в &apos; бібліотекою xlsx і вирішує проблему з "apos" на сайті
+  let cleaned = text
+    .replace(/&apos;/g, 'ʼ')
+    .replace(/&#39;/g, 'ʼ')
+    .replace(/&#039;/g, 'ʼ')
+    .replace(/&amp;apos;/g, 'ʼ')
+    .replace(/&amp;#39;/g, 'ʼ')
+    .replace(/&amp;#039;/g, 'ʼ');
+
+  // Очищаємо можливі артефакти "apos", що виникли раніше при некоректній очистці
+  cleaned = cleaned.replace(/([а-яА-ЯёЁіІїЇєЄґҐ])\s*apos\s*([а-яА-ЯёЁіІїЇєЄґҐ])/gi, '$1ʼ$2');
+
+  // Розділяємо HTML по тегах, щоб не замінити лапки в атрибутах тегів
+  const parts = cleaned.split(/(<[^>]+>)/g);
+  for (let i = 0; i < parts.length; i++) {
+    // В текстових блоках (поза тегами) замінюємо будь-які одинарні лапки та криві апострофи на U+02BC (ʼ)
+    if (!parts[i].startsWith('<')) {
+      parts[i] = parts[i]
+        .replace(/'/g, 'ʼ')
+        .replace(/`/g, 'ʼ')
+        .replace(/’/g, 'ʼ');
+    }
+  }
+  
+  return parts.join('');
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Рекурсивна очистка всіх рядкових полів в об'єкті від неправильних апострофів
+// ─────────────────────────────────────────────────────────────────────────────
+function cleanObjectApostrophes<T>(obj: T): T {
+  if (typeof obj === 'string') {
+    return cleanApostrophes(obj) as unknown as T;
+  }
+  if (Array.isArray(obj)) {
+    return obj.map(item => cleanObjectApostrophes(item)) as unknown as T;
+  }
+  if (obj !== null && typeof obj === 'object') {
+    const cleaned: any = {};
+    for (const key of Object.keys(obj)) {
+      cleaned[key] = cleanObjectApostrophes((obj as any)[key]);
+    }
+    return cleaned as T;
+  }
+  return obj;
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // Цикл валідації з повторними запитами
 // Якщо після MAX_RETRIES повна схема не проходить — зберігаємо частковий запис
@@ -605,7 +682,8 @@ async function processProduct(providerKey: string, slug: string): Promise<void> 
 
   try {
     const productData = await processWithRetry(truncatedText, slug);
-    fs.writeFileSync(dataJsonPath, JSON.stringify(productData, null, 2), 'utf-8');
+    const cleanedProductData = cleanObjectApostrophes(productData);
+    fs.writeFileSync(dataJsonPath, JSON.stringify(cleanedProductData, null, 2), 'utf-8');
 
     const isPartial = '_partial' in productData && productData._partial;
     const attrCount = 'attributes' in productData ? (productData.attributes?.length ?? 0) : 0;
