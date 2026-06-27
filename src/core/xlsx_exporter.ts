@@ -477,7 +477,6 @@ async function run(): Promise<void> {
   // ── Создаем книгу Excel и листы ───────────────────────────────────────────
   const wb = XLSX.utils.book_new();
 
-  // 1. Products
   const productsWS = XLSX.utils.aoa_to_sheet([PRODUCTS_HEADERS, ...productRows]);
   XLSX.utils.book_append_sheet(wb, productsWS, 'Products');
 
